@@ -189,8 +189,8 @@ type TaskList = Array<[Query, any]>;
 
 describe('Query Tests', () => {
   beforeAll(async () => {
-    db = new LarkDatabase(DATABASE_ID, { anonymous: true });
-    db2 = new LarkDatabase();
+    db = new LarkDatabase(TEST_DATABASE, { anonymous: true });
+    db2 = new LarkDatabase(TEST_DATABASE, { anonymous: true });
     await db.connect(TEST_DATABASE, { anonymous: true });
     await db2.connect(TEST_DATABASE, { anonymous: true });
   });

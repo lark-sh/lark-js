@@ -75,7 +75,7 @@ const EventAccumulatorFactory = {
 
 describe('Firebase v8 API Compatibility', () => {
   beforeAll(async () => {
-    db = new LarkDatabase(DATABASE_ID, { anonymous: true });
+    db = new LarkDatabase(TEST_DATABASE, { anonymous: true });
     await db.connect(TEST_DATABASE, { anonymous: true });
   });
 
@@ -391,7 +391,7 @@ describe('Firebase v8 API Compatibility', () => {
 
 describe('Firebase v8 API - Context Parameter', () => {
   beforeAll(async () => {
-    db = new LarkDatabase(DATABASE_ID, { anonymous: true });
+    db = new LarkDatabase(TEST_DATABASE, { anonymous: true });
     await db.connect(TEST_DATABASE, { anonymous: true });
   });
 
@@ -630,7 +630,7 @@ describe('Firebase v8 API - Context Parameter', () => {
 
 describe('Firebase v8 API - Priority and child_moved', () => {
   beforeAll(async () => {
-    db = new LarkDatabase(DATABASE_ID, { anonymous: true });
+    db = new LarkDatabase(TEST_DATABASE, { anonymous: true });
     await db.connect(TEST_DATABASE, { anonymous: true });
   });
 

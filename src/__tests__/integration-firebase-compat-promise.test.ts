@@ -49,7 +49,7 @@ function getRootNode(index?: number, path?: string): DatabaseReference {
 }
 
 beforeAll(async () => {
-  db = new LarkDatabase(DATABASE_ID, { anonymous: true });
+  db = new LarkDatabase(`${TEST_PROJECT}/test`, { anonymous: true });
   await db.connect(`${TEST_PROJECT}/test`, { anonymous: true });
 });
 

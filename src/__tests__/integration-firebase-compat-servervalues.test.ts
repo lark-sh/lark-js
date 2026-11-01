@@ -69,8 +69,9 @@ describe('ServerValue tests', () => {
     node.off('value');
 
     // By the time the write is acknowledged, we should have a local and
-    // server version of the timestamp.
-    expect(values.length).toEqual(2);
+    // server version of the timestamp. If both land on the same millisecond the
+    // value didn't change, so only one event fires.
+    expect([1, 2]).toContain(values.length);
     values.forEach(serverTime => {
       const delta = Math.abs(serverTime - start);
       expect(delta).toBeLessThan(1000);
