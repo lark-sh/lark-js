@@ -26,13 +26,12 @@ npm install @lark-sh/client
 ```typescript
 import { LarkDatabase } from '@lark-sh/client';
 
-const db = new LarkDatabase();
+// Create with anonymous auth
+const db = new LarkDatabase('my-project/my-database', { anonymous: true });
+// Or use a JWT token
+// const db = new LarkDatabase('my-project/my-database', { token: 'your-jwt-token' });
 
-// Connect with anonymous auth
-await db.connect('my-project/my-database', { anonymous: true });
-
-// Or connect with a JWT token
-// await db.connect('my-project/my-database', { token: 'your-jwt-token' });
+await db.connect();
 
 // Write data
 await db.ref('users/alice').set({ name: 'Alice', score: 100 });
@@ -61,10 +60,10 @@ await db.disconnect();
 ### Connection Management
 
 ```typescript
-const db = new LarkDatabase();
+const db = new LarkDatabase('project/database', { anonymous: true });
 
 // Connect
-await db.connect('project/database', { anonymous: true });
+await db.connect();
 // or with token: { token: 'jwt-token' }
 
 // Check connection state
@@ -192,7 +191,7 @@ await db.ref('users/alice/online').onDisconnect().cancel();
 
 ```typescript
 // Initial connection
-await db.connect('project/db', { anonymous: true });
+await db.connect();
 
 // Switch to authenticated user
 await db.signIn('new-jwt-token');
@@ -215,10 +214,10 @@ db.onAuthStateChanged((auth) => {
 You don't need to wait for `connect()` to finish before using the database. Operations called during connection are automatically queued and execute once authenticated:
 
 ```typescript
-const db = new LarkDatabase();
+const db = new LarkDatabase('project/db', { anonymous: true });
 
 // Start connecting (don't await)
-const connectPromise = db.connect('project/db', { anonymous: true });
+const connectPromise = db.connect();
 
 // These queue and run after auth completes
 db.ref('users').on('value', callback);
@@ -257,8 +256,8 @@ For users migrating from Firebase who need exact v8 API behavior, use the `fb-v8
 ```typescript
 import { LarkDatabase, DatabaseReference } from '@lark-sh/client/fb-v8';
 
-const db = new LarkDatabase();
-await db.connect('project/database', { anonymous: true });
+const db = new LarkDatabase('project/database', { anonymous: true });
+await db.connect();
 
 const ref = db.ref('players');
 
@@ -288,12 +287,14 @@ ref.once('value', successCallback, cancelCallback, context);
 Lark uses WebSocket by default. You can opt in to WebTransport for lower latency in supported browsers (Chrome 97+, Edge 97+, Firefox 114+).
 
 ```typescript
-await db.connect('project/db', {
+const db = new LarkDatabase('project/db', {
   anonymous: true,
   // transport: 'websocket',   // Default: WebSocket only
   // transport: 'auto',        // Try WebTransport first, fall back to WebSocket
   // transport: 'webtransport' // Force WebTransport (fails if unavailable)
 });
+
+await db.connect();
 
 // Check which transport is in use
 console.log(db.transportType);  // 'websocket' | 'webtransport'
