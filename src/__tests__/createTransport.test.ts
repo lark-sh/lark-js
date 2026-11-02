@@ -92,8 +92,12 @@ describe('createTransport', () => {
       connected: true,
     };
 
-    (WebSocketTransport as unknown as Mock).mockImplementation(() => mockWsInstance);
-    (WebTransportClient as unknown as Mock).mockImplementation(() => mockWtInstance);
+    (WebSocketTransport as unknown as Mock).mockImplementation(function () {
+      return mockWsInstance;
+    });
+    (WebTransportClient as unknown as Mock).mockImplementation(function () {
+      return mockWtInstance;
+    });
   });
 
   describe('with transport: "websocket"', () => {
