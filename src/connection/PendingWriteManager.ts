@@ -13,6 +13,8 @@ export interface PendingWrite {
   operation: WriteOperation;
   path: string;
   value?: unknown;
+  /** The message as first built, resent unchanged if the write is still pending. */
+  message?: object;
   timestamp: number;
 }
 
@@ -23,12 +25,19 @@ export class PendingWriteManager {
    * Track a new pending write operation.
    * Uses the request ID as the tracking key.
    */
-  trackWrite(requestId: string, operation: WriteOperation, path: string, value?: unknown): void {
+  trackWrite(
+    requestId: string,
+    operation: WriteOperation,
+    path: string,
+    value?: unknown,
+    message?: object
+  ): void {
     this.pending.set(requestId, {
       oid: requestId,
       operation,
       path,
       value,
+      message,
       timestamp: Date.now(),
     });
   }
