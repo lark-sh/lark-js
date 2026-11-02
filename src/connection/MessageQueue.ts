@@ -7,10 +7,12 @@
  */
 
 import { LarkError } from '../LarkError';
+import { ErrorCode } from '../protocol/constants';
 import {
   ServerMessage,
   isAckMessage,
   isAuthCompleteMessage,
+  isAuthErrorMessage,
   isJoinCompleteMessage,
   isNackMessage,
   isOnceResponseMessage,
@@ -19,7 +21,7 @@ import {
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
-  timeout: ReturnType<typeof setTimeout>;
+  timeout: ReturnType<typeof setTimeout> | undefined;
 }
 
 /** Response from join complete message */
@@ -53,15 +55,19 @@ export class MessageQueue {
   /**
    * Register a pending request that expects a response.
    * Returns a promise that resolves when ack is received, or rejects on nack/timeout.
+   * A timeout of `Infinity` waits without a limit, for a write held until the
+   * connection is ready.
    */
   registerRequest(requestId: string, timeout?: number): Promise<unknown> {
     return new Promise((resolve, reject) => {
       const timeoutMs = timeout ?? this.defaultTimeout;
 
-      const timeoutHandle = setTimeout(() => {
-        this.pending.delete(requestId);
-        reject(new LarkError('timeout', `Request ${requestId} timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
+      const timeoutHandle = Number.isFinite(timeoutMs)
+        ? setTimeout(() => {
+            this.pending.delete(requestId);
+            reject(new LarkError('timeout', `Request ${requestId} timed out after ${timeoutMs}ms`));
+          }, timeoutMs)
+        : undefined;
 
       this.pending.set(requestId, {
         resolve,
@@ -106,6 +112,17 @@ export class MessageQueue {
           uid: message.au || null,
         };
         pending.resolve(response);
+        return true;
+      }
+    }
+
+    // Auth rejected (bad or expired token)
+    if (isAuthErrorMessage(message)) {
+      const pending = this.pending.get(message.ae);
+      if (pending) {
+        clearTimeout(pending.timeout);
+        this.pending.delete(message.ae);
+        pending.reject(new LarkError(ErrorCode.AUTH_FAILED, message.err));
         return true;
       }
     }
@@ -166,14 +183,16 @@ export class MessageQueue {
   }
 
   /**
-   * Reject all pending requests (e.g., on disconnect).
+   * Reject all pending requests (e.g., on disconnect), except those `keep`
+   * returns true for.
    */
-  rejectAll(error: Error): void {
-    for (const [, pending] of this.pending) {
+  rejectAll(error: Error, keep?: (requestId: string) => boolean): void {
+    for (const [requestId, pending] of this.pending) {
+      if (keep?.(requestId)) continue;
       clearTimeout(pending.timeout);
       pending.reject(error);
+      this.pending.delete(requestId);
     }
-    this.pending.clear();
   }
 
   /**

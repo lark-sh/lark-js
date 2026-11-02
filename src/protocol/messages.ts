@@ -265,6 +265,12 @@ export interface AuthCompleteMessage {
   au: string; // UID (empty string for anonymous)
 }
 
+/** The token was rejected. Sent in place of AuthCompleteMessage. */
+export interface AuthErrorMessage {
+  ae: string; // auth error with request ID
+  err: string; // human-readable reason
+}
+
 export interface PingMessage {
   o: 'pi'; // operation: ping (keepalive from server)
 }
@@ -276,6 +282,7 @@ export type ServerMessage =
   | OnceResponseMessage
   | JoinCompleteMessage
   | AuthCompleteMessage
+  | AuthErrorMessage
   | PingMessage;
 
 // ============================================
@@ -292,6 +299,10 @@ export function isJoinCompleteMessage(msg: ServerMessage): msg is JoinCompleteMe
 
 export function isAuthCompleteMessage(msg: ServerMessage): msg is AuthCompleteMessage {
   return 'ac' in msg;
+}
+
+export function isAuthErrorMessage(msg: ServerMessage): msg is AuthErrorMessage {
+  return 'ae' in msg;
 }
 
 export function isNackMessage(msg: ServerMessage): msg is NackMessage {

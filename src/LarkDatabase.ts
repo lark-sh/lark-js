@@ -4,13 +4,13 @@
 
 import { createTransport, TransportType } from './connection/createTransport';
 import { AuthCompleteResponse, JoinCompleteResponse, MessageQueue } from './connection/MessageQueue';
-import { PendingWriteManager } from './connection/PendingWriteManager';
+import { PendingWriteManager, type PendingWrite } from './connection/PendingWriteManager';
 import { SubscriptionManager, SnapshotCallback } from './connection/SubscriptionManager';
 import { Transport } from './connection/Transport';
 import { DatabaseReference } from './DatabaseReference';
 import { DataSnapshot } from './DataSnapshot';
 import { LarkError } from './LarkError';
-import { DEFAULT_LARK_DOMAIN, EventType } from './protocol/constants';
+import { DEFAULT_LARK_DOMAIN, EventType, ErrorCode } from './protocol/constants';
 import {
   AuthMessage,
   ClientMessage,
@@ -307,6 +307,12 @@ export class LarkDatabase {
 
   // Connection promise - shared by connect() and lazy operations
   private _connectionPromise: Promise<void> | null = null;
+  // Counts connection attempts, so a close event from an earlier transport (one
+  // closed by goOffline() just before goOnline(), say) can be told apart.
+  private _transportGeneration = 0;
+  // Set by goOffline() and cleared by goOnline(). Writes made while offline are
+  // held and sent when the connection comes back.
+  private _offline = false;
   private _serverTimeOffset: number = 0;
   private _pingInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -489,6 +495,10 @@ export class LarkDatabase {
       return this._connectionPromise;
     }
 
+    if (this._offline) {
+      throw new LarkError(ErrorCode.NOT_CONNECTED, 'Database is offline; call goOnline() to reconnect');
+    }
+
     // Need to connect
     this._intentionalDisconnect = false;
     this._connectionPromise = this.performConnect(this._databaseId, this._connectOptions);
@@ -515,6 +525,7 @@ export class LarkDatabase {
     isReconnect = false
   ): Promise<void> {
     this._state = isReconnect ? 'reconnecting' : 'connecting';
+    const generation = ++this._transportGeneration;
 
     try {
       // Construct server URL from database ID
@@ -530,7 +541,9 @@ export class LarkDatabase {
         {
           onMessage: this.handleMessage.bind(this),
           onOpen: () => {}, // Handled in connect flow
-          onClose: this.handleClose.bind(this),
+          onClose: (code: number, reason: string) => {
+            if (generation === this._transportGeneration) this.handleClose(code, reason);
+          },
           onError: this.handleError.bind(this),
         },
         {
@@ -590,6 +603,10 @@ export class LarkDatabase {
         token: {}, // Token claims would need to be decoded from the token if needed
       };
 
+      // Send writes made before the connection was ready, in order, before any
+      // write made from here on.
+      this.sendPendingWrites();
+
       this._state = 'authenticated';
       this._reconnectAttempt = 0; // Reset reconnect attempt counter on success
 
@@ -624,6 +641,11 @@ export class LarkDatabase {
       this._transportType = null;
       this.transport?.close();
       this.transport = null;
+
+      // Writes waiting for this connection fail with it, and their local
+      // changes are rolled back.
+      this.rejectPendingWrites(error as Error);
+      this.handleError(error as Error);
       throw error;
     }
   }
@@ -678,6 +700,7 @@ export class LarkDatabase {
    * Disconnects from the server but preserves subscriptions for later reconnection via goOnline().
    */
   goOffline(): void {
+    this._offline = true;
     if (this._state === 'authenticated' || this._state === 'joined' ||
         this._state === 'connected' || this._state === 'reconnecting') {
       this._intentionalDisconnect = true;
@@ -689,6 +712,7 @@ export class LarkDatabase {
       this.transport?.close();
       this.transport = null;
       this._state = 'disconnected';
+      this._connectionPromise = null;
       // Keep cache intact so get()/once() can read from it while offline
       // Fire connection state change for .info/connected subscribers
       this.fireConnectionStateChange();
@@ -701,6 +725,7 @@ export class LarkDatabase {
    */
   goOnline(): void {
     this._intentionalDisconnect = false;
+    this._offline = false;
 
     // If we're disconnected and have connection info, reconnect
     if (this._state === 'disconnected' && this._databaseId && this._connectOptions) {
@@ -758,7 +783,10 @@ export class LarkDatabase {
     // Keep: pendingWrites
     // Keep: infoSubscriptions (will fire again when reconnected)
     this.subscriptionManager.clearCacheOnly();
-    this.messageQueue.rejectAll(new Error('Connection closed'));
+    // Pending writes are resent once reconnected, so their promises stay open.
+    this.messageQueue.rejectAll(new Error('Connection closed'), (requestId) =>
+      this.pendingWrites.isPending(requestId)
+    );
 
     // Fire connection state change for .info/connected subscribers (now disconnected)
     this.fireConnectionStateChange();
@@ -905,69 +933,78 @@ export class LarkDatabase {
    * Restore subscriptions and retry pending writes after reconnect.
    */
   private async restoreAfterReconnect(): Promise<void> {
-    // Re-subscribe to all active subscriptions
+    // Re-subscribe to all active subscriptions. Pending writes were already
+    // resent by sendPendingWrites().
     await this.subscriptionManager.resubscribeAll();
-
-    // Retry all pending writes
-    await this.retryPendingWrites();
   }
 
   /**
-   * Retry all pending writes after reconnect.
+   * Send every pending write, oldest first: writes made before the connection
+   * was ready or while offline, and writes the server may not have received
+   * before a reconnect. The server ignores a request ID it has already applied.
    */
-  private async retryPendingWrites(): Promise<void> {
-    const pendingWrites = this.pendingWrites.getPendingWrites();
-
-    for (const write of pendingWrites) {
+  private sendPendingWrites(): void {
+    for (const write of this.pendingWrites.getPendingWrites()) {
       try {
-        // Re-send the write with the same request ID
-        // Server will deduplicate if already processed
-        switch (write.operation) {
-          case 'set': {
-            const message: ClientMessage = {
-              o: 's',
-              p: write.path,
-              v: write.value,
-              r: write.oid, // Use original request ID
-            };
-            this.send(message);
-            break;
-          }
-          case 'update': {
-            const message: ClientMessage = {
-              o: 'u',
-              p: write.path,
-              v: write.value as Record<string, unknown>,
-              r: write.oid,
-            };
-            this.send(message);
-            break;
-          }
-          case 'delete': {
-            const message: ClientMessage = {
-              o: 'd',
-              p: write.path,
-              r: write.oid,
-            };
-            this.send(message);
-            break;
-          }
-          case 'transaction': {
-            const message: TransactionMessage = {
-              o: 'tx',
-              ops: write.value as TxOperation[],
-              r: write.oid,
-            };
-            this.send(message);
-            break;
-          }
+        // Volatile paths are only known once joined. A set to one sent before
+        // then would wait for an ack the server never sends, so send it as volatile.
+        if (write.operation === 'set' && this.isVolatilePath(write.path)) {
+          this.subscriptionManager.applyOptimisticWrite(write.path, write.value, '', 'set');
+          this.transport?.sendVolatile(JSON.stringify({ o: 's', p: write.path, v: write.value }));
+          this.pendingWrites.onAck(write.oid);
+          this.subscriptionManager.clearPendingWrite(write.oid);
+          this.messageQueue.handleMessage({ a: write.oid });
+          continue;
         }
+        this.send((write.message ?? this.buildWriteMessage(write)) as ClientMessage);
       } catch (error) {
         // If we fail to send, the connection might have dropped again
         // The next reconnect will retry
-        console.error('Failed to retry pending write:', error);
+        console.error('Failed to send pending write:', error);
       }
     }
+  }
+
+  /** Rebuilds the message for a pending write tracked without one. */
+  private buildWriteMessage(write: PendingWrite): ClientMessage | TransactionMessage {
+    switch (write.operation) {
+      case 'set':
+        return { o: 's', p: write.path, v: write.value, r: write.oid };
+      case 'update':
+        return { o: 'u', p: write.path, v: write.value as Record<string, unknown>, r: write.oid };
+      case 'delete':
+        return { o: 'd', p: write.path, r: write.oid };
+      case 'transaction':
+        return { o: 'tx', ops: write.value as TxOperation[], r: write.oid };
+    }
+  }
+
+  /** Fails every pending write with `error` and rolls back its local change. */
+  private rejectPendingWrites(error: Error): void {
+    for (const write of this.pendingWrites.getPendingWrites()) {
+      this.messageQueue.rejectLocally(write.oid, error);
+      this.subscriptionManager.handleWriteNack(write.oid);
+    }
+    this.pendingWrites.clear();
+  }
+
+  /**
+   * Send a tracked write and wait for its ack. A write made before the
+   * connection is ready, or while offline, is held: the connect flow sends it
+   * with any other pending writes, in order, so it waits without a timeout.
+   */
+  private async deliverWrite(requestId: string, message: ClientMessage | TransactionMessage): Promise<void> {
+    if (this._state === 'authenticated' && this.transport?.connected) {
+      this.send(message);
+      await this.messageQueue.registerRequest(requestId);
+      return;
+    }
+    const ack = this.messageQueue.registerRequest(requestId, Infinity);
+    if (!this._offline) {
+      // A failed connect rejects held writes through rejectPendingWrites().
+      this.ensureConnected().catch(() => {});
+    }
+    await ack;
   }
 
   // ============================================
@@ -1092,19 +1129,16 @@ export class LarkDatabase {
    * @internal Send a transaction to the server.
    */
   async _sendTransaction(ops: TxOperation[]): Promise<void> {
-    if (this._state !== 'authenticated') await this.ensureConnected();
     const requestId = this.messageQueue.nextRequestId();
-
-    // Track the pending write using request ID (store ops as value for potential retry)
-    this.pendingWrites.trackWrite(requestId, 'transaction', '/', ops);
-
     const message: TransactionMessage = {
       o: 'tx',
       ops,
       r: requestId,
     };
-    this.send(message);
-    await this.messageQueue.registerRequest(requestId);
+
+    // Track the pending write using request ID (store ops as value for potential retry)
+    this.pendingWrites.trackWrite(requestId, 'transaction', '/', ops, message);
+    await this.deliverWrite(requestId, message);
   }
 
   // ============================================
@@ -1369,7 +1403,6 @@ export class LarkDatabase {
    * Note: Priority is now part of the value (as .priority), not a separate field.
    */
   async _sendSet(path: string, value: unknown): Promise<void> {
-    if (this._state !== 'authenticated') await this.ensureConnected();
     const normalizedPath = normalizePath(path) || '/';
 
     // Validate data before sending
@@ -1381,8 +1414,16 @@ export class LarkDatabase {
     // Get pending write IDs for this path (from subscribed Views)
     const pendingWriteIds = this.subscriptionManager.getPendingWriteIdsForPath(normalizedPath);
 
+    const message: ClientMessage = {
+      o: 's',
+      p: normalizedPath,
+      v: value, // Send original value with ServerValue placeholders to server
+      r: requestId,
+      pw: pendingWriteIds.length > 0 ? pendingWriteIds : undefined,
+    };
+
     // Track the pending write using request ID
-    this.pendingWrites.trackWrite(requestId, 'set', normalizedPath, value);
+    this.pendingWrites.trackWrite(requestId, 'set', normalizedPath, value, message);
 
     // Also track in SubscriptionManager for View-level pending write tracking
     this.subscriptionManager.trackPendingWrite(normalizedPath, requestId);
@@ -1394,23 +1435,13 @@ export class LarkDatabase {
 
     // Apply optimistically to local cache and fire events before sending
     this.subscriptionManager.applyOptimisticWrite(normalizedPath, resolvedValue, requestId, 'set');
-
-    const message: ClientMessage = {
-      o: 's',
-      p: normalizedPath,
-      v: value, // Send original value with ServerValue placeholders to server
-      r: requestId,
-      pw: pendingWriteIds.length > 0 ? pendingWriteIds : undefined,
-    };
-    this.send(message);
-    await this.messageQueue.registerRequest(requestId);
+    await this.deliverWrite(requestId, message);
   }
 
   /**
    * @internal Send an update operation.
    */
   async _sendUpdate(path: string, values: Record<string, unknown>): Promise<void> {
-    if (this._state !== 'authenticated') await this.ensureConnected();
     const normalizedPath = normalizePath(path) || '/';
 
     // Validate each value being updated
@@ -1426,8 +1457,16 @@ export class LarkDatabase {
     // Get pending write IDs for this path (from subscribed Views)
     const pendingWriteIds = this.subscriptionManager.getPendingWriteIdsForPath(normalizedPath);
 
+    const message: ClientMessage = {
+      o: 'u',
+      p: normalizedPath,
+      v: values, // Send original value with ServerValue placeholders to server
+      r: requestId,
+      pw: pendingWriteIds.length > 0 ? pendingWriteIds : undefined,
+    };
+
     // Track the pending write using request ID
-    this.pendingWrites.trackWrite(requestId, 'update', normalizedPath, values);
+    this.pendingWrites.trackWrite(requestId, 'update', normalizedPath, values, message);
 
     // Also track in SubscriptionManager for View-level pending write tracking
     this.subscriptionManager.trackPendingWrite(normalizedPath, requestId);
@@ -1443,23 +1482,13 @@ export class LarkDatabase {
 
     // Apply optimistically to local cache and fire events before sending
     this.subscriptionManager.applyOptimisticWrite(normalizedPath, resolvedValues, requestId, 'update');
-
-    const message: ClientMessage = {
-      o: 'u',
-      p: normalizedPath,
-      v: values, // Send original value with ServerValue placeholders to server
-      r: requestId,
-      pw: pendingWriteIds.length > 0 ? pendingWriteIds : undefined,
-    };
-    this.send(message);
-    await this.messageQueue.registerRequest(requestId);
+    await this.deliverWrite(requestId, message);
   }
 
   /**
    * @internal Send a delete operation.
    */
   async _sendDelete(path: string): Promise<void> {
-    if (this._state !== 'authenticated') await this.ensureConnected();
     const normalizedPath = normalizePath(path) || '/';
 
     const requestId = this.messageQueue.nextRequestId();
@@ -1467,23 +1496,22 @@ export class LarkDatabase {
     // Get pending write IDs for this path (from subscribed Views)
     const pendingWriteIds = this.subscriptionManager.getPendingWriteIdsForPath(normalizedPath);
 
-    // Track the pending write using request ID
-    this.pendingWrites.trackWrite(requestId, 'delete', normalizedPath);
-
-    // Also track in SubscriptionManager for View-level pending write tracking
-    this.subscriptionManager.trackPendingWrite(normalizedPath, requestId);
-
-    // Apply optimistically to local cache and fire events before sending
-    this.subscriptionManager.applyOptimisticWrite(normalizedPath, null, requestId, 'delete');
-
     const message: ClientMessage = {
       o: 'd',
       p: normalizedPath,
       r: requestId,
       pw: pendingWriteIds.length > 0 ? pendingWriteIds : undefined,
     };
-    this.send(message);
-    await this.messageQueue.registerRequest(requestId);
+
+    // Track the pending write using request ID
+    this.pendingWrites.trackWrite(requestId, 'delete', normalizedPath, undefined, message);
+
+    // Also track in SubscriptionManager for View-level pending write tracking
+    this.subscriptionManager.trackPendingWrite(normalizedPath, requestId);
+
+    // Apply optimistically to local cache and fire events before sending
+    this.subscriptionManager.applyOptimisticWrite(normalizedPath, null, requestId, 'delete');
+    await this.deliverWrite(requestId, message);
   }
 
   // ============================================
@@ -1664,6 +1692,8 @@ export class LarkDatabase {
    * Includes tag for non-default queries to enable proper event routing.
    */
   private async sendSubscribeMessage(path: string, queryParams?: QueryParams, tag?: number): Promise<void> {
+    // While offline, goOnline() subscribes every view when it reconnects.
+    if (this._offline) return;
     if (this._state !== 'authenticated') await this.ensureConnected();
     const requestId = this.messageQueue.nextRequestId();
     const message: ClientMessage = {
@@ -1682,6 +1712,8 @@ export class LarkDatabase {
    * Includes query params and tag so server can identify which specific subscription to remove.
    */
   private async sendUnsubscribeMessage(path: string, queryParams?: QueryParams, tag?: number): Promise<void> {
+    // The server dropped every subscription when the connection closed.
+    if (this._offline) return;
     if (this._state !== 'authenticated') await this.ensureConnected();
     const requestId = this.messageQueue.nextRequestId();
     const message: ClientMessage = {

@@ -71,6 +71,8 @@ export const ErrorCode = {
   CONDITION_FAILED: 'condition_failed',
   INVALID_QUERY: 'invalid_query',
   AUTH_REQUIRED: 'auth_required',
+  AUTH_FAILED: 'auth_failed',
+  NOT_CONNECTED: 'not_connected',
 } as const;
 
 export type ErrorCodeType = (typeof ErrorCode)[keyof typeof ErrorCode];
