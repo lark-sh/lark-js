@@ -86,7 +86,7 @@ class EventAccumulator<T> {
 
 describe('Firebase Compat: DataSnapshot Tests', () => {
   beforeAll(async () => {
-    db = new LarkDatabase(DATABASE_ID, { anonymous: true });
+    db = new LarkDatabase(TEST_DATABASE, { anonymous: true });
     await db.connect(TEST_DATABASE, { anonymous: true });
   });
 
@@ -388,7 +388,7 @@ describe('Firebase Compat: DataSnapshot Tests', () => {
 
 describe('Firebase Compat: Query Tests', () => {
   beforeAll(async () => {
-    db = new LarkDatabase(DATABASE_ID, { anonymous: true });
+    db = new LarkDatabase(TEST_DATABASE, { anonymous: true });
     await db.connect(TEST_DATABASE, { anonymous: true });
   });
 
@@ -687,7 +687,7 @@ describe('Firebase Compat: Query Tests', () => {
 
 describe('Firebase Compat: OrderBy Tests', () => {
   beforeAll(async () => {
-    db = new LarkDatabase(DATABASE_ID, { anonymous: true });
+    db = new LarkDatabase(TEST_DATABASE, { anonymous: true });
     await db.connect(TEST_DATABASE, { anonymous: true });
   });
 
@@ -959,7 +959,7 @@ describe('Firebase Compat: OrderBy Tests', () => {
 // TODO: Transaction tests skipped - transactions are not local-first (may retry with different values)
 describe.skip('Firebase Compat: Transaction Tests', () => {
   beforeAll(async () => {
-    db = new LarkDatabase(DATABASE_ID, { anonymous: true });
+    db = new LarkDatabase(TEST_DATABASE, { anonymous: true });
     await db.connect(TEST_DATABASE, { anonymous: true });
   });
 
@@ -1022,7 +1022,7 @@ describe.skip('Firebase Compat: Transaction Tests', () => {
 
 describe('Firebase Compat: off() Tests', () => {
   beforeAll(async () => {
-    db = new LarkDatabase(DATABASE_ID, { anonymous: true });
+    db = new LarkDatabase(TEST_DATABASE, { anonymous: true });
     await db.connect(TEST_DATABASE, { anonymous: true });
   });
 
@@ -1097,7 +1097,7 @@ describe('Firebase Compat: off() Tests', () => {
 
 describe('Firebase Compat: Additional Features', () => {
   beforeAll(async () => {
-    db = new LarkDatabase(DATABASE_ID, { anonymous: true });
+    db = new LarkDatabase(TEST_DATABASE, { anonymous: true });
     await db.connect(TEST_DATABASE, { anonymous: true });
   });
 

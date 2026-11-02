@@ -93,7 +93,7 @@ declare const TEST_ALT_NAMESPACE: any;
 declare const TEST_NAMESPACE: any;
 
 beforeAll(async () => {
-  db = new LarkDatabase(DATABASE_ID, { anonymous: true });
+  db = new LarkDatabase(`${TEST_PROJECT}/test`, { anonymous: true });
   await db.connect(`${TEST_PROJECT}/test`, { anonymous: true });
 });
 
