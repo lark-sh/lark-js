@@ -10,7 +10,7 @@ JavaScript/TypeScript client for [Lark](https://lark.sh) - a real-time database 
 - **Real-time subscriptions** - Live updates with `child_added`, `child_changed`, `child_removed`, `child_moved`
 - **Full query support** - `orderByChild()`, `limitToFirst()`, `startAt()`, `endAt()`, and more
 - **Transactions** - Atomic updates with optimistic concurrency
-- **Local-first writes** - Optimistic updates appear instantly
+- **Local-first writes** - Writes appear instantly, even before connecting or while offline
 - **Works everywhere** - Browsers and Node.js
 - **TypeScript support** - Full type definitions included
 - **~20KB gzipped** - Lightweight bundle
@@ -31,8 +31,7 @@ const db = new LarkDatabase('my-project/my-database', { anonymous: true });
 // Or use a JWT token
 // const db = new LarkDatabase('my-project/my-database', { token: 'your-jwt-token' });
 
-await db.connect();
-
+// No need to call connect(): the first operation connects.
 // Write data
 await db.ref('users/alice').set({ name: 'Alice', score: 100 });
 
@@ -62,26 +61,41 @@ await db.disconnect();
 ```typescript
 const db = new LarkDatabase('project/database', { anonymous: true });
 
-// Connect
+// Optional: wait for the connection, e.g. to show progress or catch a bad token
 await db.connect();
-// or with token: { token: 'jwt-token' }
 
 // Check connection state
 db.connected;     // true if authenticated
-db.state;         // 'disconnected' | 'connecting' | 'connected' | 'joined' | 'authenticated'
+db.state;         // 'disconnected' | 'connecting' | 'connected' | 'joined' | 'authenticated' | 'reconnecting'
 
 // Connection events
 db.onConnect(() => console.log('Connected'));
 db.onDisconnect(() => console.log('Disconnected'));
-db.onError((err) => console.error(err));
+db.onReconnecting(() => console.log('Reconnecting'));
+db.onError((err) => console.error(err)); // includes a failed connection
 
-// Pause/resume connection (preserves cache)
+// Go offline and back (see Offline below)
 db.goOffline();
 db.goOnline();
 
 // Full disconnect (clears all state)
 await db.disconnect();
 ```
+
+If the connection drops, the client reconnects with backoff, restores your listeners, and resends writes the server hasn't acknowledged.
+
+### Connection Options
+
+```typescript
+const db = new LarkDatabase('project/database', {
+  token: 'jwt-token',      // Sign in with a JWT (or anonymous: true)
+  domain: 'example.com',   // Your server's domain (default: larkdb.net)
+  secure: true,            // wss://. Default: the page's protocol in a browser, else true
+  transport: 'websocket',  // See Transport Options
+});
+```
+
+The client connects to `{project}.{domain}`. For a server you run yourself, set `domain` to the domain the server is configured with. For a local server, include the port and turn off `secure`, e.g. `{ domain: 'lark.localhost:8080', secure: false }`.
 
 ### Reading & Writing Data
 
@@ -176,6 +190,8 @@ await db.transaction([
 ### OnDisconnect
 
 ```typescript
+import { ServerValue } from '@lark-sh/client';
+
 // Set data when client disconnects
 await db.ref('users/alice/online').onDisconnect().set(false);
 await db.ref('users/alice/lastSeen').onDisconnect().set(ServerValue.TIMESTAMP);
@@ -190,8 +206,7 @@ await db.ref('users/alice/online').onDisconnect().cancel();
 ### Authentication
 
 ```typescript
-// Initial connection
-await db.connect();
+// Pass a token (or anonymous: true) to the constructor, then switch users later
 
 // Switch to authenticated user
 await db.signIn('new-jwt-token');
@@ -209,22 +224,50 @@ db.onAuthStateChanged((auth) => {
 });
 ```
 
-### Lazy Connect
+### Using the Database Right Away
 
-You don't need to wait for `connect()` to finish before using the database. Operations called during connection are automatically queued and execute once authenticated:
+You can use the database as soon as you create it. The first operation starts connecting, so there's nothing to wait for:
 
 ```typescript
 const db = new LarkDatabase('project/db', { anonymous: true });
 
-// Start connecting (don't await)
-const connectPromise = db.connect();
-
-// These queue and run after auth completes
+// Listeners start once connected
 db.ref('users').on('value', callback);
+
+// Writes apply locally at once, so listeners on this client see them immediately.
+// They're sent in order once connected, and the promise resolves when the server
+// acknowledges the write.
 const writePromise = db.ref('data').set({ hello: 'world' });
 
-await connectPromise;
 await writePromise;
+```
+
+Reads with `once()` wait for the connection unless the data is already cached by a listener.
+
+If the connection fails, for example because the token is rejected, `connect()` and writes waiting on it reject with an `auth_failed` (or other) `LarkError`, their local changes are rolled back, and `onError` callbacks fire.
+
+### Offline
+
+`goOffline()` closes the connection and keeps your cache, listeners and writes:
+
+```typescript
+db.ref('notes').on('value', callback);  // Listening caches the data
+db.goOffline();
+
+// Applies locally at once and is sent when you call goOnline()
+const write = db.ref('notes/1').set({ text: 'written offline' });
+
+// Reads are served from the cache; data no listener holds rejects with 'not_connected'
+const snap = await db.ref('notes').once('value');
+
+// Listeners added while offline start when you're back online
+db.ref('users').on('value', usersCallback);
+
+db.hasPendingWrites();      // true
+db.getPendingWriteCount();  // 1
+
+db.goOnline();   // Reconnects, restores listeners, sends held writes in order
+await write;     // Resolves once the server acknowledges it
 ```
 
 ### Volatile Paths
@@ -324,7 +367,7 @@ try {
   await db.ref('protected').set({ data: 'test' });
 } catch (err) {
   if (err instanceof LarkError) {
-    console.log(err.code);    // 'permission_denied', 'not_connected', etc.
+    console.log(err.code);    // 'permission_denied', 'auth_failed', 'not_connected', etc.
     console.log(err.message);
   }
 }
