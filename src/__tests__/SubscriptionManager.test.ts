@@ -1,12 +1,16 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import type { Mock } from 'vitest';
 import { SubscriptionManager } from '../connection/SubscriptionManager';
 import type { PutEventMessage, PatchEventMessage } from '../protocol/messages';
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyMock = Mock<(...args: any[]) => any>;
+
 describe('SubscriptionManager', () => {
   let manager: SubscriptionManager;
-  let mockSendSubscribe: ReturnType<typeof vi.fn>;
-  let mockSendUnsubscribe: ReturnType<typeof vi.fn>;
-  let mockCreateSnapshot: ReturnType<typeof vi.fn>;
+  let mockSendSubscribe: AnyMock;
+  let mockSendUnsubscribe: AnyMock;
+  let mockCreateSnapshot: AnyMock;
 
   beforeEach(() => {
     manager = new SubscriptionManager();

@@ -6,8 +6,12 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { Mock } from 'vitest';
 import { SubscriptionManager } from '../connection/SubscriptionManager';
 import { DataSnapshot } from '../DataSnapshot';
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyMock = Mock<(...args: any[]) => any>;
 
 // Helper to create a mock snapshot factory
 function createMockSnapshotFactory() {
@@ -23,9 +27,9 @@ function createMockSnapshotFactory() {
 
 describe('SubscriptionManager multi-view support', () => {
   let manager: SubscriptionManager;
-  let sendSubscribe: ReturnType<typeof vi.fn>;
-  let sendUnsubscribe: ReturnType<typeof vi.fn>;
-  let createSnapshot: ReturnType<typeof vi.fn>;
+  let sendSubscribe: AnyMock;
+  let sendUnsubscribe: AnyMock;
+  let createSnapshot: AnyMock;
 
   beforeEach(() => {
     manager = new SubscriptionManager();
